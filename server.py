@@ -1,12 +1,13 @@
 import os
+import sys
 import logging
 import httpx
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
 from typing import Optional, Any
 
-# Configure structured logging
-logging.basicConfig(level=logging.INFO)
+# Configure structured logging to stderr (to avoid breaking MCP stdio)
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
 # Initialize FastMCP server
@@ -325,5 +326,14 @@ async def set_timer(count: int, source_day: Optional[str] = None, current_task: 
     return await _make_request("POST", "/api/v1/timer/set", json_data=payload)
 
 if __name__ == "__main__":
+    import sys
+    if "--help" in sys.argv:
+        print("Tracker MCP Server")
+        print("This server provides tools to interact with the Tracker API.")
+        print("It uses the MCP (Model Context Protocol) over stdio.")
+        print("\nEnvironment Variables:")
+        print("  TRACKER_API_URL: URL of the tracker-server (default: http://localhost:3000)")
+        sys.exit(0)
+    
     # Ensure MCP Server always runs in stdio mode by default if executed directly
     mcp.run(transport="stdio")
