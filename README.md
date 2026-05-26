@@ -27,7 +27,7 @@ Because `tracker-server` is running on your host machine locally, Docker needs t
         "--rm",
         "-e",
         "TRACKER_API_URL=http://host.docker.internal:3000",
-        "ghcr.io/makegorka/tracker-mcp:latest"
+        "ghcr.io/egormak/tracker-mcp:sha-57577b3"
       ]
     }
   }
