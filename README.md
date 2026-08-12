@@ -1,6 +1,6 @@
 # Tracker MCP Server
 
-This is an MCP (Model Context Protocol) server designed to connect to your local `tracker-server`. It exposes endpoints like checking today's schedule, retrieving statistics, registering tasks, and managing timers directly to LLM clients (like Claude Desktop or Cursor).
+This is an MCP (Model Context Protocol) server designed to connect to your local `tracker-server`. It exposes endpoints like checking and applying today's schedule, retrieving statistics, registering tasks, and managing timers directly to LLM clients (like Claude Desktop or Cursor).
 
 ## Prerequisites
 - A running instance of `tracker-server` (usually on `http://localhost:3000`).

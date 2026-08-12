@@ -137,6 +137,11 @@ async def get_active_weekly_schedule() -> Any:
     return await _make_request("GET", "/api/v1/schedule/active")
 
 @mcp.tool()
+async def apply_schedule_today() -> Any:
+    """Apply the active schedule for today, creating daily task definitions in tracker-server."""
+    return await _make_request("POST", "/api/v1/schedule/apply")
+
+@mcp.tool()
 async def set_schedule_task_time(task_name: str, minutes: int, day: str = "today") -> dict:
     """Set an existing task's scheduled minutes for today, a weekday, or all days.
 
