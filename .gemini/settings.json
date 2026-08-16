@@ -7,7 +7,7 @@
         "-i",
         "--rm",
         "-e",
-        "TRACKER_API_URL=http://host.docker.internal:3000",
+        "TRACKER_API_URL=https://tracker.makegorka.com",
         "ghcr.io/egormak/tracker-mcp:sha-57577b3"
       ]
     }
