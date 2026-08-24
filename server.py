@@ -33,6 +33,10 @@ async def _make_request(method: str, endpoint: str, json_data: dict = None, para
                 response = await client.post(url, json=json_data, headers=headers)
             elif method == "PUT":
                 response = await client.put(url, json=json_data, headers=headers)
+            elif method == "PATCH":
+                response = await client.patch(url, json=json_data, headers=headers)
+            elif method == "DELETE":
+                response = await client.delete(url, headers=headers)
             else:
                 raise ValueError(f"Unsupported method: {method}")
             
@@ -514,6 +518,59 @@ async def add_schedule_tasks(tasks: list[dict], day: str = "today") -> dict:
         "updated_days": updated_days,
         "tracker_response": update_response
     }
+
+@mcp.tool()
+async def adjust_running_task_timer(task_name: str, delta_minutes: int) -> dict:
+    """Adjust the target duration of an active running task timer (+/- minutes).
+
+    Args:
+        task_name: The name of the task to adjust.
+        delta_minutes: Minutes to add or subtract (e.g. 5, 10, -5).
+    """
+    payload = {"task_name": task_name, "delta_minutes": delta_minutes}
+    return await _make_request("POST", "/api/v1/timer/run/adjust", json_data=payload)
+
+@mcp.tool()
+async def get_weekly_stats() -> dict:
+    """Get the full weekly completion statistics with per-day breakdowns and role totals."""
+    return await _make_request("GET", "/api/v1/stats/weekly")
+
+@mcp.tool()
+async def get_evening_focus_task(category: Optional[str] = None, sprint_time: Optional[int] = None) -> dict:
+    """Get the current recommended focus task candidate for evening catch-up mode.
+
+    Args:
+        category: Optional category filter (e.g., 'learn' or 'rest').
+        sprint_time: Optional micro-sprint time in minutes (default 20).
+    """
+    params = {}
+    if category:
+        params["category"] = category
+    if sprint_time:
+        params["time"] = sprint_time
+    return await _make_request("GET", "/api/v1/mode/evening-focus", params=params)
+
+@mcp.tool()
+async def skip_evening_focus_task(task_name: str, category: Optional[str] = None, sprint_time: Optional[int] = None) -> dict:
+    """Skip the current evening candidate task and fetch the next candidate.
+
+    Args:
+        task_name: The task to snooze/skip for tonight.
+        category: Optional category filter.
+        sprint_time: Optional micro-sprint time in minutes.
+    """
+    params = {}
+    if category:
+        params["category"] = category
+    if sprint_time:
+        params["time"] = sprint_time
+    payload = {"task_name": task_name}
+    return await _make_request("POST", "/api/v1/mode/evening-focus/skip", json_data=payload, params=params)
+
+@mcp.tool()
+async def rotate_plan_percent() -> dict:
+    """Rotate the current active plan percent group to the next configured group."""
+    return await _make_request("POST", "/api/v1/task/plan/rotate")
 
 if __name__ == "__main__":
     import sys
