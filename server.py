@@ -58,7 +58,7 @@ def _today_name() -> str:
     """Return today's lowercase weekday name."""
     return DAYS[datetime.now().weekday()]
 
-def _normalize_day(day: Optional[str]) -> str:
+def _normalize_day(day: Optional[str]) -> Optional[str]:
     """Normalize common day aliases used by natural-language MCP calls."""
     if not day:
         return "today"
@@ -76,18 +76,13 @@ def _normalize_day(day: Optional[str]) -> str:
     }
     normalized = aliases.get(normalized, normalized)
 
-    if normalized == "today":
-        return _today_name()
-    if normalized in DAYS or normalized == "all":
+    if normalized in DAYS or normalized in ("today", "all"):
         return normalized
-    raise ValueError(f"Invalid day '{day}'. Use today, all, or one of: {', '.join(DAYS)}")
+    return None
 
 def _schedule_request_from_active(schedule: dict) -> dict:
     """Build the update payload expected by PUT /api/v1/schedule/:id."""
     return {day: schedule[day] for day in DAYS}
-
-def _available_tasks(day_schedule: dict) -> list[str]:
-    return [task.get("name", "") for task in day_schedule.get("tasks", [])]
 
 async def _get_active_schedule_data() -> tuple[Optional[dict], Optional[dict]]:
     response = await _make_request("GET", "/api/v1/schedule/active")
@@ -101,24 +96,6 @@ async def _get_active_schedule_data() -> tuple[Optional[dict], Optional[dict]]:
         return None, {"error": "Invalid Response", "details": "Active schedule has no id"}
 
     return schedule, None
-
-def _update_task_time(schedule: dict, day: str, task_name: str, new_minutes: int) -> Optional[dict]:
-    day_schedule = schedule.get(day)
-    if not isinstance(day_schedule, dict):
-        return None
-
-    target = task_name.strip().lower()
-    for task in day_schedule.get("tasks", []):
-        if task.get("name", "").strip().lower() == target:
-            old_minutes = task.get("time", 0)
-            task["time"] = new_minutes
-            return {
-                "day": day,
-                "task_name": task.get("name", task_name),
-                "old_minutes": old_minutes,
-                "new_minutes": new_minutes,
-            }
-    return None
 
 async def _save_active_schedule(schedule: dict) -> Any:
     schedule_id = schedule["id"]
@@ -152,119 +129,30 @@ async def set_schedule_task_time(task_name: str, minutes: int, day: str = "today
     Args:
         task_name: Existing schedule task name, matched case-insensitively (for example, "work" or "video").
         minutes: New scheduled duration in minutes. Must be zero or greater.
-        day: "today", a weekday name such as "monday", or "all"/"every day" for every weekday.
+        day: Target day: 'today', 'all', or a weekday name (e.g. 'monday'). Defaults to 'today'.
     """
-    if minutes < 0:
-        return {"error": "Minutes must be zero or greater"}
+    normalized_day = _normalize_day(day)
+    if not normalized_day:
+        return {"error": f"Invalid day '{day}'. Supported: today, all, or weekday name (e.g. monday)"}
 
-    try:
-        normalized_day = _normalize_day(day)
-    except ValueError as e:
-        return {"error": "Invalid Day", "details": str(e)}
-
-    schedule, error = await _get_active_schedule_data()
-    if error:
-        return error
-
-    days_to_update = DAYS if normalized_day == "all" else [normalized_day]
-    changes = []
-    missing = {}
-
-    for update_day in days_to_update:
-        change = _update_task_time(schedule, update_day, task_name, minutes)
-        if change:
-            changes.append(change)
-        else:
-            missing[update_day] = _available_tasks(schedule.get(update_day, {}))
-
-    if not changes:
-        return {
-            "error": "Task Not Found",
-            "task_name": task_name,
-            "searched_days": days_to_update,
-            "available_tasks": missing,
-        }
-
-    update_response = await _save_active_schedule(schedule)
-    if isinstance(update_response, dict) and update_response.get("error"):
-        return update_response
-
-    return {
-        "status": "success",
-        "schedule_id": schedule["id"],
-        "changes": changes,
-        "missing_days": missing,
-        "tracker_response": update_response,
-    }
+    payload = {"task_name": task_name, "minutes": minutes, "day": normalized_day}
+    return await _make_request("PATCH", "/api/v1/schedule/active/task-time", json_data=payload)
 
 @mcp.tool()
-async def adjust_schedule_task_time(task_name: str, minutes_delta: int, day: str = "all") -> dict:
+async def adjust_schedule_task_time(task_name: str, delta_minutes: int, day: str = "today") -> dict:
     """Increase or decrease an existing task's scheduled minutes.
 
     Args:
         task_name: Existing schedule task name, matched case-insensitively.
-        minutes_delta: Minutes to add or subtract, for example 10 or -15.
-        day: "today", a weekday name such as "monday", or "all"/"every day" for every weekday.
+        delta_minutes: Minutes to add or subtract, for example 10 or -15.
+        day: Target day: 'today', 'all', or a weekday name (e.g. 'monday'). Defaults to 'today'.
     """
-    try:
-        normalized_day = _normalize_day(day)
-    except ValueError as e:
-        return {"error": "Invalid Day", "details": str(e)}
+    normalized_day = _normalize_day(day)
+    if not normalized_day:
+        return {"error": f"Invalid day '{day}'. Supported: today, all, or weekday name (e.g. monday)"}
 
-    schedule, error = await _get_active_schedule_data()
-    if error:
-        return error
-
-    days_to_update = DAYS if normalized_day == "all" else [normalized_day]
-    changes = []
-    missing = {}
-
-    for update_day in days_to_update:
-        day_schedule = schedule.get(update_day, {})
-        target = task_name.strip().lower()
-        matched = False
-
-        for task in day_schedule.get("tasks", []):
-            if task.get("name", "").strip().lower() == target:
-                old_minutes = task.get("time", 0)
-                new_minutes = old_minutes + minutes_delta
-                if new_minutes < 0:
-                    return {
-                        "error": "Invalid Minutes",
-                        "details": f"{task.get('name', task_name)} on {update_day} would become negative ({new_minutes})",
-                    }
-                task["time"] = new_minutes
-                changes.append({
-                    "day": update_day,
-                    "task_name": task.get("name", task_name),
-                    "old_minutes": old_minutes,
-                    "new_minutes": new_minutes,
-                })
-                matched = True
-                break
-
-        if not matched:
-            missing[update_day] = _available_tasks(day_schedule)
-
-    if not changes:
-        return {
-            "error": "Task Not Found",
-            "task_name": task_name,
-            "searched_days": days_to_update,
-            "available_tasks": missing,
-        }
-
-    update_response = await _save_active_schedule(schedule)
-    if isinstance(update_response, dict) and update_response.get("error"):
-        return update_response
-
-    return {
-        "status": "success",
-        "schedule_id": schedule["id"],
-        "changes": changes,
-        "missing_days": missing,
-        "tracker_response": update_response,
-    }
+    payload = {"task_name": task_name, "delta_minutes": delta_minutes, "day": normalized_day}
+    return await _make_request("PATCH", "/api/v1/schedule/active/task-time", json_data=payload)
 
 @mcp.tool()
 async def get_rollover_tasks(day: Optional[str] = None) -> Any:
@@ -448,16 +336,16 @@ async def add_schedule_tasks(tasks: list[dict], day: str = "today") -> dict:
         if "role" not in t or t["role"] not in ["work", "learn", "rest"]:
             return {"error": f"Task at index {i} must have 'role' of 'work', 'learn', or 'rest'"}
 
-    try:
-        normalized_day = _normalize_day(day)
-    except ValueError as e:
-        return {"error": "Invalid Day", "details": str(e)}
+    normalized_day = _normalize_day(day)
+    if not normalized_day:
+        return {"error": "Invalid Day", "details": f"Invalid day '{day}'. Supported: today, all, or weekday name (e.g. monday)"}
 
+    target_day = _today_name() if normalized_day == "today" else normalized_day
     schedule, error = await _get_active_schedule_data()
     if error:
         return error
 
-    days_to_update = DAYS if normalized_day == "all" else [normalized_day]
+    days_to_update = DAYS if target_day == "all" else [target_day]
     updated_days = []
 
     for update_day in days_to_update:
