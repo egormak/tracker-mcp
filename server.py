@@ -16,6 +16,9 @@ mcp = FastMCP("tracker-mcp-server")
 API_BASE = os.getenv("TRACKER_API_URL", "http://localhost:3000").rstrip("/")
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"]
+WEEKENDS = ["saturday", "sunday"]
+DEFAULT_BACKGROUND_TASKS = ["video", "games", "movies", "telegram"]
 
 async def _make_request(method: str, endpoint: str, json_data: dict = None, params: dict = None) -> Any:
     """Helper method to make async HTTP requests to the tracker server."""
@@ -79,6 +82,24 @@ def _normalize_day(day: Optional[str]) -> Optional[str]:
     if normalized in DAYS or normalized in ("today", "all"):
         return normalized
     return None
+
+def _resolve_target_days(scope: Optional[str]) -> list[str]:
+    """Resolve target scope to a list of weekday names."""
+    if not scope:
+        return DAYS
+
+    normalized = scope.strip().lower().replace("-", " ").replace("_", " ")
+    if normalized in ("all", "week", "weekly", "every day", "everyday", "daily"):
+        return DAYS
+    if normalized in ("weekdays", "weekday", "workdays", "workday", "working days"):
+        return WEEKDAYS
+    if normalized in ("weekends", "weekend"):
+        return WEEKENDS
+    if normalized in ("today", "tod"):
+        return [_today_name()]
+    if normalized in DAYS:
+        return [normalized]
+    return []
 
 def _schedule_request_from_active(schedule: dict) -> dict:
     """Build the update payload expected by PUT /api/v1/schedule/:id."""
@@ -153,6 +174,254 @@ async def adjust_schedule_task_time(task_name: str, delta_minutes: int, day: str
 
     payload = {"task_name": task_name, "delta_minutes": delta_minutes, "day": normalized_day}
     return await _make_request("PATCH", "/api/v1/schedule/active/task-time", json_data=payload)
+
+@mcp.tool()
+async def suggest_daily_schedule(
+    target_scope: str = "week",
+    background_tasks: Optional[list[str]] = None,
+    background_minutes: int = 30,
+    work_minutes: int = 270,
+    english_minutes: int = 20,
+    home_task_weekend_minutes: int = 60,
+    apply: bool = False,
+) -> dict:
+    """Analyze and balance weekly or daily schedule according to workflow heuristics.
+
+    Evaluates the active schedule against user routine rules:
+    - Weekdays (Mon-Fri): Work (default 270m), English (default 20m), Background smoothing slots (default 30m each for video, games, movies, telegram), and Home task (0m, shifted to weekend).
+    - Weekends (Sat-Sun): Work (0m, day off), Home task focus (default 60m), Background activities (30m min).
+    - Rollover deficit inspection: Surfaces carryover deficits from previous days.
+
+    Args:
+        target_scope: Scope of days to balance: 'week' (or 'all'), 'weekdays', 'weekends', 'today', or a specific day (e.g. 'monday'). Defaults to 'week'.
+        background_tasks: Optional list of background task names to smooth. Defaults to ['video', 'games', 'movies', 'telegram'].
+        background_minutes: Target minutes for weekday background tasks (default 30).
+        work_minutes: Target minutes for weekday work (default 270).
+        english_minutes: Target minutes for english practice (default 20).
+        home_task_weekend_minutes: Target minutes for weekend home tasks (default 60).
+        apply: If False (default), returns preview of suggestions and diffs. If True, executes atomic updates to the active schedule.
+    """
+    days_to_analyze = _resolve_target_days(target_scope)
+    if not days_to_analyze:
+        return {
+            "error": "Invalid target_scope",
+            "details": f"Unknown target scope '{target_scope}'. Supported: week, all, weekdays, weekends, today, or weekday name."
+        }
+
+    bg_tasks = [t.strip().lower() for t in (background_tasks if background_tasks is not None else DEFAULT_BACKGROUND_TASKS)]
+
+    schedule, error = await _get_active_schedule_data()
+    if error:
+        return error
+
+    rollover_resp = await _make_request("GET", "/api/v1/schedule/active/rollover")
+    rollovers_detected = []
+    if isinstance(rollover_resp, dict) and rollover_resp.get("status") == "success":
+        rdata = rollover_resp.get("data", {})
+        if isinstance(rdata, dict):
+            rollovers_detected = rdata.get("rollover_tasks", [])
+
+    daily_suggestions = []
+    all_changes = []
+    total_minutes_before = 0
+    total_minutes_after = 0
+
+    for day in days_to_analyze:
+        day_schedule = schedule.get(day)
+        if not isinstance(day_schedule, dict):
+            continue
+
+        tasks = day_schedule.get("tasks", [])
+        current_day_total = sum(t.get("time", 0) for t in tasks)
+        total_minutes_before += current_day_total
+
+        is_weekday = day in WEEKDAYS
+        is_weekend = day in WEEKENDS
+
+        day_changes = []
+        new_tasks_time_map = {}
+
+        # Map existing tasks by lowercase name
+        task_map = {}
+        for t in tasks:
+            tname = t.get("name", "").strip().lower()
+            task_map[tname] = t
+            new_tasks_time_map[tname] = t.get("time", 0)
+
+        # 1. Work heuristic
+        if "work" in task_map:
+            current_time = task_map["work"].get("time", 0)
+            target_time = work_minutes if is_weekday else 0
+            if current_time != target_time:
+                reason = f"Standard weekday work obligation ({work_minutes}m)" if is_weekday else "Weekend day off for work (0m)"
+                change = {
+                    "day": day,
+                    "task_name": task_map["work"].get("name", "work"),
+                    "current_minutes": current_time,
+                    "suggested_minutes": target_time,
+                    "delta_minutes": target_time - current_time,
+                    "reason": reason,
+                }
+                day_changes.append(change)
+                all_changes.append(change)
+                new_tasks_time_map["work"] = target_time
+
+        # 2. English heuristic
+        if "english" in task_map:
+            current_time = task_map["english"].get("time", 0)
+            target_time = english_minutes
+            if current_time != target_time:
+                change = {
+                    "day": day,
+                    "task_name": task_map["english"].get("name", "english"),
+                    "current_minutes": current_time,
+                    "suggested_minutes": target_time,
+                    "delta_minutes": target_time - current_time,
+                    "reason": f"Daily english practice target ({english_minutes}m)",
+                }
+                day_changes.append(change)
+                all_changes.append(change)
+                new_tasks_time_map["english"] = target_time
+
+        # 3. Background tasks smoothing heuristic
+        for bg in bg_tasks:
+            if bg in task_map:
+                current_time = task_map[bg].get("time", 0)
+                if is_weekday:
+                    target_time = background_minutes
+                    if current_time != target_time:
+                        change = {
+                            "day": day,
+                            "task_name": task_map[bg].get("name", bg),
+                            "current_minutes": current_time,
+                            "suggested_minutes": target_time,
+                            "delta_minutes": target_time - current_time,
+                            "reason": f"Weekday background smoothing slot ({background_minutes}m)",
+                        }
+                        day_changes.append(change)
+                        all_changes.append(change)
+                        new_tasks_time_map[bg] = target_time
+                elif is_weekend:
+                    if current_time < background_minutes:
+                        target_time = background_minutes
+                        change = {
+                            "day": day,
+                            "task_name": task_map[bg].get("name", bg),
+                            "current_minutes": current_time,
+                            "suggested_minutes": target_time,
+                            "delta_minutes": target_time - current_time,
+                            "reason": f"Weekend background activity minimum ({background_minutes}m)",
+                        }
+                        day_changes.append(change)
+                        all_changes.append(change)
+                        new_tasks_time_map[bg] = target_time
+
+        # 4. Home task heuristic
+        if "home_task" in task_map:
+            current_time = task_map["home_task"].get("time", 0)
+            if is_weekday:
+                target_time = 0
+                if current_time != target_time:
+                    change = {
+                        "day": day,
+                        "task_name": task_map["home_task"].get("name", "home_task"),
+                        "current_minutes": current_time,
+                        "suggested_minutes": target_time,
+                        "delta_minutes": target_time - current_time,
+                        "reason": "Weekday home_task shifted to weekend focus (0m)",
+                    }
+                    day_changes.append(change)
+                    all_changes.append(change)
+                    new_tasks_time_map["home_task"] = target_time
+            elif is_weekend:
+                target_time = home_task_weekend_minutes
+                if current_time != target_time:
+                    change = {
+                        "day": day,
+                        "task_name": task_map["home_task"].get("name", "home_task"),
+                        "current_minutes": current_time,
+                        "suggested_minutes": target_time,
+                        "delta_minutes": target_time - current_time,
+                        "reason": f"Weekend home_task focus block ({home_task_weekend_minutes}m)",
+                    }
+                    day_changes.append(change)
+                    all_changes.append(change)
+                    new_tasks_time_map["home_task"] = target_time
+
+        suggested_day_total = sum(new_tasks_time_map.values())
+        total_minutes_after += suggested_day_total
+
+        daily_suggestions.append({
+            "day": day,
+            "total_time_current": current_day_total,
+            "total_time_suggested": suggested_day_total,
+            "changes_count": len(day_changes),
+            "changes": day_changes,
+        })
+
+    summary = {
+        "days_analyzed": len(days_to_analyze),
+        "total_changes_suggested": len(all_changes),
+        "total_minutes_before": total_minutes_before,
+        "total_minutes_after": total_minutes_after,
+        "delta_minutes": total_minutes_after - total_minutes_before,
+    }
+
+    if not apply:
+        msg = f"Generated {len(all_changes)} schedule adjustment suggestions across {len(days_to_analyze)} days. Run with apply=True to apply them directly to the active schedule." if all_changes else "Schedule is already balanced according to the specified heuristics."
+        return {
+            "status": "success",
+            "applied": False,
+            "target_scope": target_scope,
+            "summary": summary,
+            "rollovers_detected": rollovers_detected,
+            "daily_suggestions": daily_suggestions,
+            "message": msg
+        }
+
+    applied_changes = []
+    errors = []
+
+    for change in all_changes:
+        day = change["day"]
+        task_name = change["task_name"]
+        minutes = change["suggested_minutes"]
+
+        patch_res = await set_schedule_task_time(task_name=task_name, minutes=minutes, day=day)
+        if isinstance(patch_res, dict) and patch_res.get("error"):
+            errors.append({
+                "day": day,
+                "task_name": task_name,
+                "error": patch_res.get("error"),
+                "details": patch_res.get("details")
+            })
+        else:
+            applied_changes.append({
+                "day": day,
+                "task_name": task_name,
+                "new_minutes": minutes
+            })
+
+    if not all_changes:
+        msg = "Schedule is already balanced according to the specified heuristics. No changes needed."
+    elif not errors:
+        msg = f"Successfully applied {len(applied_changes)} schedule adjustments across {len(days_to_analyze)} days."
+    else:
+        msg = f"Applied {len(applied_changes)} adjustments with {len(errors)} errors."
+
+    return {
+        "status": "success" if not errors else ("partial" if applied_changes else "error"),
+        "applied": True,
+        "applied_count": len(applied_changes),
+        "errors_count": len(errors),
+        "errors": errors,
+        "target_scope": target_scope,
+        "summary": summary,
+        "rollovers_detected": rollovers_detected,
+        "applied_changes": applied_changes,
+        "daily_suggestions": daily_suggestions,
+        "message": msg
+    }
 
 @mcp.tool()
 async def get_rollover_tasks(day: Optional[str] = None) -> Any:
