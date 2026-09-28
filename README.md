@@ -27,12 +27,16 @@ Because `tracker-server` is running on your host machine locally, Docker needs t
         "--rm",
         "-e",
         "TRACKER_API_URL=http://host.docker.internal:3000",
-        "ghcr.io/egormak/tracker-mcp:sha-57577b3"
+        "ghcr.io/egormak/tracker-mcp:latest"
       ]
     }
   }
 }
 ```
+
+> CI publishes `latest`, a date tag (`YYYY-MM-DD`) and a short-sha tag (`sha-xxxxxxx`) on every push to `main`; pin one of the latter for reproducible setups.
+>
+> If your `tracker-server` requires authentication, also pass `-e TRACKER_API_KEY=<token>` (sent as the `X-Bot-Token` header).
 
 > Note: Notice the `-i` flag. Because MCP communicates over stdin/stdout (`stdio`), you must run the docker container interactively, but without a TTY (`-t`).
 
@@ -47,7 +51,12 @@ If you are developing or simply prefer to run from source instead of Docker.
    cd tracker-mcp
    python -m venv venv
    source venv/bin/activate
-   pip install -r requirements.txt
+   pip install -r requirements.txt   # or requirements-dev.txt to also run tests
+   ```
+
+   Run the test suite (no live tracker-server needed):
+   ```bash
+   pytest
    ```
 
 2. **Run the MCP Server manually**:

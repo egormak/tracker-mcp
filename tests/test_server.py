@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from unittest.mock import patch, AsyncMock
 import server
@@ -371,3 +372,114 @@ async def test_suggest_daily_schedule_scope_weekdays_filters_days():
         assert "sunday" not in analyzed_days
 
 
+
+@pytest.mark.asyncio
+async def test_add_rest_sends_rest_time():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"status": "success"}
+        res = await server.add_rest(15)
+        assert res["status"] == "success"
+        mock_req.assert_called_once_with("POST", "/api/v1/rest/add", json_data={"rest_time": 15})
+
+@pytest.mark.asyncio
+async def test_spend_rest_sends_rest_time():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"status": "success"}
+        await server.spend_rest(10)
+        mock_req.assert_called_once_with("POST", "/api/v1/rest/spend", json_data={"rest_time": 10})
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["add_rest", "spend_rest"])
+async def test_rest_rejects_non_positive_minutes(tool):
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await getattr(server, tool)(0)
+        assert "error" in res
+        mock_req.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_get_rest_adds_minutes():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"rest_time": 4500}
+        res = await server.get_rest()
+        assert res == {"rest_time": 4500, "rest_minutes": 45}
+
+@pytest.mark.asyncio
+async def test_get_rest_passes_errors_through():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"error": "HTTP 500", "details": "boom"}
+        res = await server.get_rest()
+        assert res == {"error": "HTTP 500", "details": "boom"}
+
+@pytest.mark.asyncio
+async def test_set_timer():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"status": "accept"}
+        await server.set_timer(25)
+        mock_req.assert_called_once_with("POST", "/api/v1/timer/set", json_data={"count": 25, "time_duration": 25})
+
+@pytest.mark.asyncio
+async def test_set_timer_rejects_non_positive():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await server.set_timer(0)
+        assert "error" in res
+        mock_req.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_add_task_record_normalizes_source_day():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"status": "success"}
+        await server.add_task_record("work", 30, source_day=" Monday ")
+        mock_req.assert_called_once_with(
+            "POST", "/api/v1/taskrecord", json_data={"task_name": "work", "time_done": 30, "source_day": "monday"}
+        )
+
+@pytest.mark.asyncio
+async def test_add_task_record_invalid_source_day():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await server.add_task_record("work", 30, source_day="today")
+        assert res["error"] == "Invalid Day"
+        mock_req.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_add_schedule_tasks_rejects_bool_time():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await server.add_schedule_tasks([{"name": "math", "time": True, "role": "learn"}])
+        assert "error" in res
+        mock_req.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_make_request_forwards_params_on_post():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["params"] = dict(request.url.params)
+        captured["body"] = request.content
+        return httpx.Response(200, json={"status": "success"})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    with patch("server.httpx.AsyncClient", lambda **kw: real_client(transport=transport, **kw)):
+        res = await server.skip_evening_focus_task("duolingo", category="learn", sprint_time=15)
+
+    assert res == {"status": "success"}
+    assert captured["method"] == "POST"
+    assert captured["params"] == {"category": "learn", "time": "15"}
+    assert b"duolingo" in captured["body"]
+
+@pytest.mark.asyncio
+async def test_make_request_http_error_and_non_json():
+    responses = iter([httpx.Response(400, text="bad"), httpx.Response(200, text="ok")])
+    transport = httpx.MockTransport(lambda request: next(responses))
+    real_client = httpx.AsyncClient
+    with patch("server.httpx.AsyncClient", lambda **kw: real_client(transport=transport, **kw)):
+        err = await server._make_request("GET", "/x")
+        ok = await server._make_request("GET", "/y")
+
+    assert err == {"error": "HTTP 400", "details": "bad"}
+    assert ok == {"status": "success", "details": "ok"}
+
+@pytest.mark.asyncio
+async def test_make_request_rejects_unknown_method():
+    res = await server._make_request("TRACE", "/x")
+    assert res["error"] == "Internal Error"

@@ -20,36 +20,33 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"]
 WEEKENDS = ["saturday", "sunday"]
 DEFAULT_BACKGROUND_TASKS = ["video", "games", "movies", "telegram"]
 
-async def _make_request(method: str, endpoint: str, json_data: dict = None, params: dict = None) -> Any:
+SUPPORTED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+async def _make_request(method: str, endpoint: str, json_data: Optional[dict] = None, params: Optional[dict] = None) -> Any:
     """Helper method to make async HTTP requests to the tracker server."""
     url = f"{API_BASE}{endpoint}"
     headers = {}
     api_key = os.getenv("TRACKER_API_KEY") or os.getenv("TRACKER_BOT_TOKEN")
     if api_key:
         headers["X-Bot-Token"] = api_key
-        
+
     try:
+        if method not in SUPPORTED_METHODS:
+            raise ValueError(f"Unsupported method: {method}")
+
         async with httpx.AsyncClient(timeout=10.0) as client:
-            if method == "GET":
-                response = await client.get(url, params=params, headers=headers)
-            elif method == "POST":
-                response = await client.post(url, json=json_data, headers=headers)
-            elif method == "PUT":
-                response = await client.put(url, json=json_data, headers=headers)
-            elif method == "PATCH":
-                response = await client.patch(url, json=json_data, headers=headers)
-            elif method == "DELETE":
-                response = await client.delete(url, headers=headers)
-            else:
-                raise ValueError(f"Unsupported method: {method}")
-            
+            # Query params are forwarded for every method (e.g. POST /mode/evening-focus/skip reads them)
+            response = await client.request(method, url, json=json_data, params=params or None, headers=headers)
             response.raise_for_status()
-            
+
             # For 200 OK without content (like sometimes with fiber if it just returns 200)
             if not response.text:
                 return {"status": "success"}
-                
-            return response.json()
+
+            try:
+                return response.json()
+            except ValueError:
+                return {"status": "success", "details": response.text}
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error occurred: {e.response.text}")
         return {"error": f"HTTP {e.response.status_code}", "details": e.response.text}
@@ -447,13 +444,16 @@ async def add_task_record(task_name: str, minutes: int, source_day: Optional[str
     """
     if minutes <= 0:
         return {"error": "Minutes must be strictly positive"}
-    
+
     payload = {
         "task_name": task_name,
         "time_done": minutes
     }
     if source_day:
-        payload["source_day"] = source_day
+        normalized_source_day = source_day.strip().lower()
+        if normalized_source_day not in DAYS:
+            return {"error": "Invalid Day", "details": f"Invalid source_day '{source_day}'. Supported: weekday name (e.g. monday)"}
+        payload["source_day"] = normalized_source_day
     if manage_by_service is not None:
         payload["manage_by_service"] = manage_by_service
         
@@ -461,49 +461,55 @@ async def add_task_record(task_name: str, minutes: int, source_day: Optional[str
 
 @mcp.tool()
 async def get_rest() -> Any:
-    """Get the amount of available rest time."""
-    return await _make_request("GET", "/api/v1/rest/get")
+    """Get the amount of available rest time.
+
+    Returns the server response (`rest_time` in raw units = minutes * 100) plus `rest_minutes`.
+    """
+    response = await _make_request("GET", "/api/v1/rest/get")
+    if isinstance(response, dict) and isinstance(response.get("rest_time"), (int, float)):
+        response["rest_minutes"] = response["rest_time"] / 100
+    return response
 
 @mcp.tool()
 async def add_rest(minutes: int) -> dict:
-    """Add accumulated rest time to the account.
-    
+    """Add accumulated rest time to the account (server caps the pool at 60 minutes).
+
     Args:
-        minutes: Total minutes to add to the rest pool.
+        minutes: Total minutes to add to the rest pool. Must be greater than zero.
     """
-    payload = {"minutes": minutes}
+    if minutes <= 0:
+        return {"error": "Minutes must be strictly positive"}
+    # The API takes minutes on input and converts to units (minutes * 100) itself
+    payload = {"rest_time": minutes}
     return await _make_request("POST", "/api/v1/rest/add", json_data=payload)
 
 @mcp.tool()
 async def spend_rest(minutes: int) -> dict:
     """Spend rest time from the account.
-    
+
     Args:
-        minutes: Total minutes of rest to consume.
+        minutes: Total minutes of rest to consume. Must be greater than zero.
     """
-    payload = {"minutes": minutes}
+    if minutes <= 0:
+        return {"error": "Minutes must be strictly positive"}
+    payload = {"rest_time": minutes}
     return await _make_request("POST", "/api/v1/rest/spend", json_data=payload)
 
 @mcp.tool()
 async def get_timer() -> Any:
-    """Get the currently active system timer."""
+    """Get the default countdown timer duration in minutes (`time_duration`)."""
     return await _make_request("GET", "/api/v1/timer/get")
 
 @mcp.tool()
-async def set_timer(count: int, source_day: Optional[str] = None, current_task: Optional[str] = None) -> dict:
-    """Set the system countdown timer.
-    
+async def set_timer(count: int) -> dict:
+    """Set the default countdown timer duration used when a task has no explicit duration.
+
     Args:
-        count: Number of seconds for the timer.
-        source_day: The origin day for rollover tasks (e.g., 'monday').
-        current_task: The name of the task the timer is for.
+        count: Timer duration in minutes. Must be greater than zero.
     """
-    payload = {"count": count}
-    if source_day:
-        payload["source_day"] = source_day
-    if current_task:
-        payload["current_task"] = current_task
-        
+    if count <= 0:
+        return {"error": "count must be strictly positive"}
+    payload = {"count": count, "time_duration": count}
     return await _make_request("POST", "/api/v1/timer/set", json_data=payload)
 
 @mcp.tool()
@@ -592,15 +598,15 @@ async def add_schedule_tasks(tasks: list[dict], day: str = "today") -> dict:
                - "role": str ("work", "learn", "rest")
                - "priority": int (optional, default 1)
                - "percents": list[int] (optional, e.g. [100])
-        day: "today", a weekday name like "monday", or "all" to add to all weekdays.
+        day: "today", a weekday name like "monday", or "all" to add to every day of the week.
     """
     # Validation
     for i, t in enumerate(tasks):
         if not isinstance(t, dict):
             return {"error": f"Task at index {i} must be a dictionary"}
-        if "name" not in t or not t["name"]:
+        if not isinstance(t.get("name"), str) or not t["name"].strip():
             return {"error": f"Task at index {i} is missing 'name'"}
-        if "time" not in t or not isinstance(t["time"], int) or t["time"] < 0:
+        if not isinstance(t.get("time"), int) or isinstance(t["time"], bool) or t["time"] < 0:
             return {"error": f"Task at index {i} must have non-negative 'time'"}
         if "role" not in t or t["role"] not in ["work", "learn", "rest"]:
             return {"error": f"Task at index {i} must have 'role' of 'work', 'learn', or 'rest'"}
@@ -730,13 +736,13 @@ async def rotate_plan_percent() -> dict:
     return await _make_request("POST", "/api/v1/task/plan/rotate")
 
 if __name__ == "__main__":
-    import sys
     if "--help" in sys.argv:
         print("Tracker MCP Server")
         print("This server provides tools to interact with the Tracker API.")
         print("It uses the MCP (Model Context Protocol) over stdio.")
         print("\nEnvironment Variables:")
         print("  TRACKER_API_URL: URL of the tracker-server (default: http://localhost:3000)")
+        print("  TRACKER_API_KEY / TRACKER_BOT_TOKEN: optional, sent as the X-Bot-Token header")
         sys.exit(0)
     
     # Ensure MCP Server always runs in stdio mode by default if executed directly
