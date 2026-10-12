@@ -415,7 +415,7 @@ async def test_set_timer():
     with patch("server._make_request", new_callable=AsyncMock) as mock_req:
         mock_req.return_value = {"status": "accept"}
         await server.set_timer(25)
-        mock_req.assert_called_once_with("POST", "/api/v1/timer/set", json_data={"count": 25, "time_duration": 25})
+        mock_req.assert_called_once_with("POST", "/api/v1/timer/set", json_data={"count": 25})
 
 @pytest.mark.asyncio
 async def test_set_timer_rejects_non_positive():
@@ -477,9 +477,58 @@ async def test_make_request_http_error_and_non_json():
         ok = await server._make_request("GET", "/y")
 
     assert err == {"error": "HTTP 400", "details": "bad"}
-    assert ok == {"status": "success", "details": "ok"}
+    assert ok == {"error": "Invalid Response", "details": "ok"}
 
 @pytest.mark.asyncio
 async def test_make_request_rejects_unknown_method():
     res = await server._make_request("TRACE", "/x")
-    assert res["error"] == "Internal Error"
+    assert res["error"] == "Unsupported Method"
+
+@pytest.mark.asyncio
+async def test_make_request_accepts_lowercase_method():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        return httpx.Response(200, json={"status": "success"})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    with patch("server.httpx.AsyncClient", lambda **kw: real_client(transport=transport, **kw)):
+        res = await server._make_request("get", "/x")
+
+    assert res == {"status": "success"}
+    assert captured["method"] == "GET"
+
+@pytest.mark.asyncio
+async def test_start_task_timer_normalizes_source_day():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"status": "success"}
+        await server.start_task_timer("math", source_day=" Monday ")
+        mock_req.assert_called_once_with(
+            "POST",
+            "/api/v1/timer/run/start",
+            json_data={"task_name": "math", "role": "", "target_duration": 0, "source_day": "monday"},
+        )
+
+@pytest.mark.asyncio
+async def test_start_task_timer_invalid_source_day():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await server.start_task_timer("math", source_day="today")
+        assert res["error"] == "Invalid Day"
+        mock_req.assert_not_called()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [{"priority": True}, {"priority": "1"}, {"percents": "100"}, {"percents": [50, True]}])
+async def test_add_schedule_tasks_rejects_bad_priority_and_percents(extra):
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await server.add_schedule_tasks([{"name": "math", "time": 30, "role": "learn", **extra}])
+        assert "error" in res
+        mock_req.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_add_schedule_tasks_non_string_name_message():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await server.add_schedule_tasks([{"name": 123, "time": 30, "role": "learn"}])
+        assert res == {"error": "Task at index 0 must have a non-empty string 'name'"}
+        mock_req.assert_not_called()

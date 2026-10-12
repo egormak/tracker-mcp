@@ -30,13 +30,14 @@ async def _make_request(method: str, endpoint: str, json_data: Optional[dict] = 
     if api_key:
         headers["X-Bot-Token"] = api_key
 
-    try:
-        if method not in SUPPORTED_METHODS:
-            raise ValueError(f"Unsupported method: {method}")
+    method = method.upper()
+    if method not in SUPPORTED_METHODS:
+        return {"error": "Unsupported Method", "details": f"Unsupported method: {method}"}
 
+    try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Query params are forwarded for every method (e.g. POST /mode/evening-focus/skip reads them)
-            response = await client.request(method, url, json=json_data, params=params or None, headers=headers)
+            response = await client.request(method, url, json=json_data, params=params, headers=headers)
             response.raise_for_status()
 
             # For 200 OK without content (like sometimes with fiber if it just returns 200)
@@ -46,7 +47,9 @@ async def _make_request(method: str, endpoint: str, json_data: Optional[dict] = 
             try:
                 return response.json()
             except ValueError:
-                return {"status": "success", "details": response.text}
+                # Every tracker-server API endpoint answers JSON, so anything else came from a different host
+                logger.error(f"Non-JSON response from {url}: {response.text[:200]}")
+                return {"error": "Invalid Response", "details": response.text[:500]}
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error occurred: {e.response.text}")
         return {"error": f"HTTP {e.response.status_code}", "details": e.response.text}
@@ -79,6 +82,11 @@ def _normalize_day(day: Optional[str]) -> Optional[str]:
     if normalized in DAYS or normalized in ("today", "all"):
         return normalized
     return None
+
+def _normalize_weekday(day: str) -> Optional[str]:
+    """Normalize a weekday name (e.g. ' Monday ' -> 'monday'); None if it is not a weekday."""
+    normalized = day.strip().lower()
+    return normalized if normalized in DAYS else None
 
 def _resolve_target_days(scope: Optional[str]) -> list[str]:
     """Resolve target scope to a list of weekday names."""
@@ -196,7 +204,7 @@ async def suggest_daily_schedule(
         work_minutes: Target minutes for weekday work (default 270).
         english_minutes: Target minutes for english practice (default 20).
         home_task_weekend_minutes: Target minutes for weekend home tasks (default 60).
-        apply: If False (default), returns preview of suggestions and diffs. If True, executes atomic updates to the active schedule.
+        apply: If False (default), returns preview of suggestions and diffs. If True, applies one update per change to the active schedule (not atomic: on failures the result has status 'partial' or 'error' and lists them in `errors`).
     """
     days_to_analyze = _resolve_target_days(target_scope)
     if not days_to_analyze:
@@ -450,8 +458,8 @@ async def add_task_record(task_name: str, minutes: int, source_day: Optional[str
         "time_done": minutes
     }
     if source_day:
-        normalized_source_day = source_day.strip().lower()
-        if normalized_source_day not in DAYS:
+        normalized_source_day = _normalize_weekday(source_day)
+        if not normalized_source_day:
             return {"error": "Invalid Day", "details": f"Invalid source_day '{source_day}'. Supported: weekday name (e.g. monday)"}
         payload["source_day"] = normalized_source_day
     if manage_by_service is not None:
@@ -497,19 +505,27 @@ async def spend_rest(minutes: int) -> dict:
 
 @mcp.tool()
 async def get_timer() -> Any:
-    """Get the default countdown timer duration in minutes (`time_duration`)."""
+    """Get the next interval, in minutes, from the legacy escalating countdown list.
+
+    The server keeps a list of intervals (1, 2, 3, ... minutes) and returns the first
+    remaining one as `time_duration`/`count`. This is NOT the value passed to `set_timer`.
+    Unrelated to the running-task timers (`start_task_timer` etc.).
+    """
     return await _make_request("GET", "/api/v1/timer/get")
 
 @mcp.tool()
 async def set_timer(count: int) -> dict:
-    """Set the default countdown timer duration used when a task has no explicit duration.
+    """Reset the legacy escalating countdown list to the intervals 1..count minutes.
+
+    This overwrites the current list, discarding its progress; afterwards `get_timer`
+    returns 1 (the first interval), not `count`. It does not set a single duration.
 
     Args:
-        count: Timer duration in minutes. Must be greater than zero.
+        count: Number of intervals in the new list (the longest is `count` minutes). Must be greater than zero.
     """
     if count <= 0:
         return {"error": "count must be strictly positive"}
-    payload = {"count": count, "time_duration": count}
+    payload = {"count": count}
     return await _make_request("POST", "/api/v1/timer/set", json_data=payload)
 
 @mcp.tool()
@@ -520,13 +536,19 @@ async def start_task_timer(task_name: str, role: str = "", target_duration: int 
         task_name: The name of the task to start.
         role: The role/group for the task (e.g. "work", "learn", "rest"). If empty, server defaults to existing role or "work".
         target_duration: Target duration in minutes (optional).
-        source_day: The origin day for rollover tasks (e.g. 'monday') (optional).
+        source_day: The origin day for rollover tasks; must be a weekday name (e.g. 'monday') (optional).
     """
+    normalized_source_day = ""
+    if source_day:
+        normalized_source_day = _normalize_weekday(source_day)
+        if not normalized_source_day:
+            return {"error": "Invalid Day", "details": f"Invalid source_day '{source_day}'. Supported: weekday name (e.g. monday)"}
+
     payload = {
         "task_name": task_name,
         "role": role,
         "target_duration": target_duration,
-        "source_day": source_day or ""
+        "source_day": normalized_source_day
     }
     return await _make_request("POST", "/api/v1/timer/run/start", json_data=payload)
 
@@ -604,12 +626,22 @@ async def add_schedule_tasks(tasks: list[dict], day: str = "today") -> dict:
     for i, t in enumerate(tasks):
         if not isinstance(t, dict):
             return {"error": f"Task at index {i} must be a dictionary"}
-        if not isinstance(t.get("name"), str) or not t["name"].strip():
+        if "name" not in t:
             return {"error": f"Task at index {i} is missing 'name'"}
+        if not isinstance(t["name"], str) or not t["name"].strip():
+            return {"error": f"Task at index {i} must have a non-empty string 'name'"}
         if not isinstance(t.get("time"), int) or isinstance(t["time"], bool) or t["time"] < 0:
             return {"error": f"Task at index {i} must have non-negative 'time'"}
         if "role" not in t or t["role"] not in ["work", "learn", "rest"]:
             return {"error": f"Task at index {i} must have 'role' of 'work', 'learn', or 'rest'"}
+        if "priority" in t and (not isinstance(t["priority"], int) or isinstance(t["priority"], bool)):
+            return {"error": f"Task at index {i} must have integer 'priority'"}
+        percents = t.get("percents")
+        if percents is not None and (
+            not isinstance(percents, list)
+            or any(not isinstance(p, int) or isinstance(p, bool) for p in percents)
+        ):
+            return {"error": f"Task at index {i} must have 'percents' as a list of integers"}
 
     normalized_day = _normalize_day(day)
     if not normalized_day:

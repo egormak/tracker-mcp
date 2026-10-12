@@ -34,7 +34,7 @@ Because `tracker-server` is running on your host machine locally, Docker needs t
 }
 ```
 
-> CI publishes `latest`, a date tag (`YYYY-MM-DD`) and a short-sha tag (`sha-xxxxxxx`) on every push to `main`; pin one of the latter for reproducible setups.
+> CI publishes `latest`, a date tag (`YYYY-MM-DD`), an hour tag (`YYYY-MM-DD-HH`, UTC) and a short-sha tag (`sha-xxxxxxx`) on every push to `main` (a manual run from another branch publishes only the sha tag); pin one of the latter for reproducible setups.
 >
 > If your `tracker-server` requires authentication, also pass `-e TRACKER_API_KEY=<token>` (sent as the `X-Bot-Token` header).
 
@@ -51,11 +51,12 @@ If you are developing or simply prefer to run from source instead of Docker.
    cd tracker-mcp
    python -m venv venv
    source venv/bin/activate
-   pip install -r requirements.txt   # or requirements-dev.txt to also run tests
+   pip install -r requirements.txt
    ```
 
    Run the test suite (no live tracker-server needed):
    ```bash
+   pip install -r requirements-dev.txt   # adds pytest and pytest-asyncio
    pytest
    ```
 

@@ -60,7 +60,7 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
   - Single helper for all outbound HTTP requests (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`).
   - Forwards `json_data` body and `params` query string for any HTTP method.
   - Exception-safe: Never raises unhandled exceptions to MCP callers. Converts HTTP error codes to `{"error": f"HTTP {status_code}", "details": ...}` and network/system errors to `{"error": "Internal Error", "details": ...}`.
-  - Handles empty 200 OK responses as `{"status": "success"}` and raw text as `{"status": "success", "details": text}`.
+  - Handles empty 200 OK responses as `{"status": "success"}`; a non-JSON 2xx body is an error (`{"error": "Invalid Response", "details": text}`), since every API endpoint returns JSON. An unsupported HTTP method returns `{"error": "Unsupported Method", ...}` without a request.
   - Callers check errors via `isinstance(res, dict) and res.get("error")`.
 - **Client-Side Validation**:
   - Validates positive integers for task minutes, rest minutes, and timer durations before sending requests.
@@ -71,10 +71,10 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
   - `_resolve_target_days(scope)`: Expands targets to appropriate day lists (`"week"` -> 7 days, `"weekdays"` -> 5 days, `"weekends"` -> 2 days, `"today"` -> current weekday).
 - **Time Units Conventions**:
   - Rest pool: `tracker-server` represents raw rest time in units (`minutes * 100`). MCP rest tools (`add_rest`, `spend_rest`) accept `minutes`. `get_rest` returns server's `rest_time` plus a calculated `rest_minutes = rest_time / 100`. Pool is capped at 60 minutes.
-  - Legacy countdown timer: `get_timer`/`set_timer` deal with default timer duration in minutes (`time_duration`), separate from `timer/run/*` running-task timers.
+  - Legacy countdown timer: the server keeps an escalating interval list. `set_timer(count)` resets it to `[1..count]` minutes and `get_timer` returns the first remaining interval (not the value passed to `set_timer`). Separate from `timer/run/*` running-task timers.
 - **Composite Tools**:
   - `add_schedule_tasks`: Performs client-side read-modify-write on active weekly schedule (`GET /api/v1/schedule/active` -> update in memory with case-insensitive matching & recalculate `total_time` -> `PUT /api/v1/schedule/{id}`).
-  - `suggest_daily_schedule`: Encodes routine heuristics (weekday work 270m, english 20m, background task smoothing 30m, weekend home task 60m focus, rollover deficit detection). Previews by default; atomically updates schedule via `set_schedule_task_time` when `apply=True`.
+  - `suggest_daily_schedule`: Encodes routine heuristics (weekday work 270m, english 20m, background task smoothing 30m, weekend home task 60m focus, rollover deficit detection). Previews by default; with `apply=True` it calls `set_schedule_task_time` once per change (not atomic) and reports `success`/`partial`/`error`.
 
 ## Available MCP Tools
 
@@ -110,8 +110,8 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
 - `spend_rest`: Spend rest minutes from pool (`POST /api/v1/rest/spend`).
 
 ### Default Countdown Timer
-- `get_timer`: Get default countdown timer duration in minutes (`GET /api/v1/timer/get`).
-- `set_timer`: Set default countdown timer duration in minutes (`POST /api/v1/timer/set`).
+- `get_timer`: Get the next interval (minutes) from the legacy escalating countdown list (`GET /api/v1/timer/get`).
+- `set_timer`: Reset that list to the intervals 1..`count` minutes (`POST /api/v1/timer/set`).
 
 ### Evening Focus Mode
 - `get_evening_focus_task`: Fetch ranked candidate task for evening catch-up mode (`GET /api/v1/mode/evening-focus`).
