@@ -25,7 +25,8 @@ SUPPORTED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 async def _make_request(method: str, endpoint: str, json_data: Optional[dict] = None, params: Optional[dict] = None) -> Any:
     """Helper method to make async HTTP requests to the tracker server."""
     url = f"{API_BASE}{endpoint}"
-    headers = {}
+    # Names this client for the server's task records and weekly usage counters
+    headers = {"X-Tracker-Client": "mcp"}
     api_key = os.getenv("TRACKER_API_KEY") or os.getenv("TRACKER_BOT_TOKEN")
     if api_key:
         headers["X-Bot-Token"] = api_key
@@ -729,6 +730,27 @@ async def adjust_running_task_timer(task_name: str, delta_minutes: int) -> dict:
 async def get_weekly_stats() -> dict:
     """Get the full weekly completion statistics with per-day breakdowns and role totals."""
     return await _make_request("GET", "/api/v1/stats/weekly")
+
+@mcp.tool()
+async def get_weekly_digest(week: str = "current") -> dict:
+    """Get the weekly digest: the input for reviewing how the tracker is actually used.
+
+    Returns totals by role, `work`/`english` against their plan, the other tasks ranked by
+    logged time, where the week diverged from the schedule, logged time by client (`clients`)
+    and the week's usage counters (`usage`: how tasks were started, evening skips, ramp
+    resets, timer extensions).
+
+    Args:
+        week: "current" or "previous". The weekly wipe erases the records, so for "previous"
+            the server answers from the snapshot taken before the wipe (`source` = "snapshot",
+            `snapshot_taken_at`); `source` = "live" means it was computed from the records.
+    """
+    normalized = (week or "current").strip().lower()
+    aliases = {"this": "current", "last": "previous", "prev": "previous"}
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in ("current", "previous"):
+        return {"error": "Invalid Week", "details": f"Invalid week '{week}'. Supported: current, previous"}
+    return await _make_request("GET", "/api/v1/stats/weekly/digest", params={"week": normalized})
 
 @mcp.tool()
 async def get_evening_focus_task(category: Optional[str] = None, sprint_time: Optional[int] = None) -> dict:

@@ -532,3 +532,46 @@ async def test_add_schedule_tasks_non_string_name_message():
         res = await server.add_schedule_tasks([{"name": 123, "time": 30, "role": "learn"}])
         assert res == {"error": "Task at index 0 must have a non-empty string 'name'"}
         mock_req.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("week,sent", [("current", "current"), ("previous", "previous"), (" Last ", "previous"), ("", "current")])
+async def test_get_weekly_digest(week, sent):
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"week": sent, "source": "live", "clients": [], "usage": []}
+        res = await server.get_weekly_digest(week)
+        assert res["week"] == sent
+        mock_req.assert_called_once_with("GET", "/api/v1/stats/weekly/digest", params={"week": sent})
+
+
+@pytest.mark.asyncio
+async def test_get_weekly_digest_rejects_unknown_week():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        res = await server.get_weekly_digest("2026-10-05")
+        assert res["error"] == "Invalid Week"
+        mock_req.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_make_request_names_the_client():
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def request(self, method, url, json=None, params=None, headers=None):
+            seen["headers"] = headers
+            return httpx.Response(200, json={"status": "success"}, request=httpx.Request(method, url))
+
+    with patch("server.httpx.AsyncClient", FakeClient):
+        res = await server._make_request("GET", "/api/v1/stats/weekly")
+
+    assert res == {"status": "success"}
+    assert seen["headers"]["X-Tracker-Client"] == "mcp"
