@@ -48,7 +48,7 @@ Use Python 3.11+ and follow PEP 8 with 4-space indentation. Keep MCP tool functi
 
 - **MCP Stdio Safety**: FastMCP communicates over stdio using `sys.stdout`. Never call `print()` or write to stdout (outside CLI `--help`). All application logging must be routed to `sys.stderr` via `logger`.
 - **Validation**: Reject invalid inputs client-side (non-positive minutes, invalid day names, malformed task dicts) and return `{"error": ...}` dicts without raising unhandled exceptions or making failed API requests.
-- **Units**: Rest endpoints send `rest_time` in minutes (the server converts to raw units `minutes * 100`); `get_rest` returns raw `rest_time` plus a calculated `rest_minutes`. The legacy countdown timer is an interval list in minutes: `set_timer(count)` resets it to `[1..count]`, `get_timer` returns the first remaining interval.
+- **Debt**: `get_debt` returns the week's debt; `start_task_timer` takes `debt_share` (0–100). The rest balance and its tools are gone. The legacy countdown timer is an interval list in minutes: `set_timer(count)` resets it to `[1..count]`, `get_timer` returns the first remaining interval.
 - **API Contract**: Match request/response schemas with `../tracker-server/openapi.yml` and the Go route handlers under `../tracker-server/internal/api/handler/`.
 
 Prefer explicit type hints for public helpers and MCP tool parameters. Keep comments short and limited to non-obvious behavior.
@@ -59,14 +59,14 @@ Tests use `pytest` + `pytest-asyncio` and never need a live tracker API: tool te
 
 ```bash
 pytest
-pytest tests/test_server.py::test_add_rest_sends_rest_time
+pytest tests/test_server.py::test_get_debt
 ```
 
 Before submitting changes, at minimum run the server locally and verify changed tools against a running `tracker-server`.
 
 ## Commit & Pull Request Guidelines
 
-Commits follow Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`), for example `fix: send rest_time in rest tools`.
+Commits follow Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`), for example `feat: add get_debt tool`.
 
 Pull requests should include a short summary, reason for the change, test results, and configuration impact. For MCP behavior changes, list affected tool names and tracker API endpoints.
 

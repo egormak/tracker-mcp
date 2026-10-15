@@ -63,14 +63,14 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
   - Handles empty 200 OK responses as `{"status": "success"}`; a non-JSON 2xx body is an error (`{"error": "Invalid Response", "details": text}`), since every API endpoint returns JSON. An unsupported HTTP method returns `{"error": "Unsupported Method", ...}` without a request.
   - Callers check errors via `isinstance(res, dict) and res.get("error")`.
 - **Client-Side Validation**:
-  - Validates positive integers for task minutes, rest minutes, and timer durations before sending requests.
+  - Validates positive integers for task minutes and timer durations, and `debt_share` in 0–100, before sending requests.
   - Validates task payload dictionaries in batch updates (`add_schedule_tasks`) and rejects invalid shapes (e.g., boolean `time`).
   - Returns `{"error": ...}` dicts directly without dispatching invalid HTTP calls.
 - **Day & Scope Normalization**:
   - `_normalize_day(day)`: Normalizes weekday names and aliases (`"today"`, `"all"`, `"every day"`, `"weekly"`, etc.).
   - `_resolve_target_days(scope)`: Expands targets to appropriate day lists (`"week"` -> 7 days, `"weekdays"` -> 5 days, `"weekends"` -> 2 days, `"today"` -> current weekday).
 - **Time Units Conventions**:
-  - Rest pool: `tracker-server` represents raw rest time in units (`minutes * 100`). MCP rest tools (`add_rest`, `spend_rest`) accept `minutes`. `get_rest` returns server's `rest_time` plus a calculated `rest_minutes = rest_time / 100`. Pool is capped at 60 minutes.
+  - Debt: `start_task_timer(debt_share=P)` sends P % of the session to the task's previous-days debt on stop. There is no rest pool any more.
   - Legacy countdown timer: the server keeps an escalating interval list. `set_timer(count)` resets it to `[1..count]` minutes and `get_timer` returns the first remaining interval (not the value passed to `set_timer`). Separate from `timer/run/*` running-task timers.
 - **Composite Tools**:
   - `add_schedule_tasks`: Performs client-side read-modify-write on active weekly schedule (`GET /api/v1/schedule/active` -> update in memory with case-insensitive matching & recalculate `total_time` -> `PUT /api/v1/schedule/{id}`).
@@ -104,10 +104,8 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
 - `get_running_task_status`: Get status of running or paused task timers (`GET /api/v1/timer/run/status`).
 - `list_running_tasks`: List all active and paused running tasks (`GET /api/v1/timer/run/list`).
 
-### Rest Pool Management
-- `get_rest`: Retrieve available rest pool balance (`rest_time` in units and `rest_minutes`) (`GET /api/v1/rest/get`).
-- `add_rest`: Add accumulated rest minutes to pool (capped at 60m) (`POST /api/v1/rest/add`).
-- `spend_rest`: Spend rest minutes from pool (`POST /api/v1/rest/spend`).
+### Debt
+- `get_debt`: This week's debt — previous days' unfinished schedule, today's remainder and the week strip (`GET /api/v1/debt`).
 
 ### Default Countdown Timer
 - `get_timer`: Get the next interval (minutes) from the legacy escalating countdown list (`GET /api/v1/timer/get`).

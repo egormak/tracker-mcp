@@ -19,8 +19,7 @@ async def test_get_evening_focus_task():
             "data": {
                 "current_task": {"task_name": "duolingo", "weekly_gap": 60},
                 "candidates": [{"task_name": "duolingo"}],
-                "sprint_time": 20,
-                "rest_pool": 15
+                "sprint_time": 20
             }
         }
         res = await server.get_evening_focus_task(category="learn", sprint_time=20)
@@ -374,41 +373,28 @@ async def test_suggest_daily_schedule_scope_weekdays_filters_days():
 
 
 @pytest.mark.asyncio
-async def test_add_rest_sends_rest_time():
+async def test_get_debt():
     with patch("server._make_request", new_callable=AsyncMock) as mock_req:
-        mock_req.return_value = {"status": "success"}
-        res = await server.add_rest(15)
-        assert res["status"] == "success"
-        mock_req.assert_called_once_with("POST", "/api/v1/rest/add", json_data={"rest_time": 15})
+        mock_req.return_value = {"status": "success", "data": {"total_minutes": 36}}
+        res = await server.get_debt()
+        assert res["data"]["total_minutes"] == 36
+        mock_req.assert_called_once_with("GET", "/api/v1/debt")
 
 @pytest.mark.asyncio
-async def test_spend_rest_sends_rest_time():
+async def test_start_task_timer_sends_debt_share():
     with patch("server._make_request", new_callable=AsyncMock) as mock_req:
         mock_req.return_value = {"status": "success"}
-        await server.spend_rest(10)
-        mock_req.assert_called_once_with("POST", "/api/v1/rest/spend", json_data={"rest_time": 10})
+        await server.start_task_timer("home_task", debt_share=25)
+        mock_req.assert_called_once_with("POST", "/api/v1/timer/run/start", json_data={
+            "task_name": "home_task", "role": "", "target_duration": 0, "source_day": "", "debt_share": 25})
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool", ["add_rest", "spend_rest"])
-async def test_rest_rejects_non_positive_minutes(tool):
+@pytest.mark.parametrize("share", [-1, 101])
+async def test_start_task_timer_rejects_bad_debt_share(share):
     with patch("server._make_request", new_callable=AsyncMock) as mock_req:
-        res = await getattr(server, tool)(0)
-        assert "error" in res
+        res = await server.start_task_timer("home_task", debt_share=share)
+        assert res["error"] == "Invalid debt_share"
         mock_req.assert_not_called()
-
-@pytest.mark.asyncio
-async def test_get_rest_adds_minutes():
-    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
-        mock_req.return_value = {"rest_time": 4500}
-        res = await server.get_rest()
-        assert res == {"rest_time": 4500, "rest_minutes": 45}
-
-@pytest.mark.asyncio
-async def test_get_rest_passes_errors_through():
-    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
-        mock_req.return_value = {"error": "HTTP 500", "details": "boom"}
-        res = await server.get_rest()
-        assert res == {"error": "HTTP 500", "details": "boom"}
 
 @pytest.mark.asyncio
 async def test_set_timer():

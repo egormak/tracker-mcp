@@ -469,40 +469,15 @@ async def add_task_record(task_name: str, minutes: int, source_day: Optional[str
     return await _make_request("POST", "/api/v1/taskrecord", json_data=payload)
 
 @mcp.tool()
-async def get_rest() -> Any:
-    """Get the amount of available rest time.
+async def get_debt() -> dict:
+    """Get this week's debt: the previous days' unfinished schedule.
 
-    Returns the server response (`rest_time` in raw units = minutes * 100) plus `rest_minutes`.
+    Returns `total_minutes`, `items` (task, day, date, remaining; oldest day first),
+    `today_remaining` and `days` (the week strip: Monday..Sunday with status closed, partial,
+    open, today, future or none). Debt is never capped; a stopped timer pays it (see
+    `start_task_timer` `debt_share`) and `clean` wipes it with the week's records.
     """
-    response = await _make_request("GET", "/api/v1/rest/get")
-    if isinstance(response, dict) and isinstance(response.get("rest_time"), (int, float)):
-        response["rest_minutes"] = response["rest_time"] / 100
-    return response
-
-@mcp.tool()
-async def add_rest(minutes: int) -> dict:
-    """Add accumulated rest time to the account (server caps the pool at 60 minutes).
-
-    Args:
-        minutes: Total minutes to add to the rest pool. Must be greater than zero.
-    """
-    if minutes <= 0:
-        return {"error": "Minutes must be strictly positive"}
-    # The API takes minutes on input and converts to units (minutes * 100) itself
-    payload = {"rest_time": minutes}
-    return await _make_request("POST", "/api/v1/rest/add", json_data=payload)
-
-@mcp.tool()
-async def spend_rest(minutes: int) -> dict:
-    """Spend rest time from the account.
-
-    Args:
-        minutes: Total minutes of rest to consume. Must be greater than zero.
-    """
-    if minutes <= 0:
-        return {"error": "Minutes must be strictly positive"}
-    payload = {"rest_time": minutes}
-    return await _make_request("POST", "/api/v1/rest/spend", json_data=payload)
+    return await _make_request("GET", "/api/v1/debt")
 
 @mcp.tool()
 async def get_timer() -> Any:
@@ -530,7 +505,7 @@ async def set_timer(count: int) -> dict:
     return await _make_request("POST", "/api/v1/timer/set", json_data=payload)
 
 @mcp.tool()
-async def start_task_timer(task_name: str, role: str = "", target_duration: int = 0, source_day: Optional[str] = None) -> dict:
+async def start_task_timer(task_name: str, role: str = "", target_duration: int = 0, source_day: Optional[str] = None, debt_share: int = 0) -> dict:
     """Start a running task timer.
     
     Args:
@@ -538,7 +513,10 @@ async def start_task_timer(task_name: str, role: str = "", target_duration: int 
         role: The role/group for the task (e.g. "work", "learn", "rest"). If empty, server defaults to existing role or "work".
         target_duration: Target duration in minutes (optional).
         source_day: The origin day for rollover tasks; must be a weekday name (e.g. 'monday') (optional).
+        debt_share: Percent (0-100) of the session that pays this task's previous-days debt when it stops (optional, default 0).
     """
+    if not 0 <= debt_share <= 100:
+        return {"error": "Invalid debt_share", "details": f"debt_share must be between 0 and 100, got {debt_share}"}
     normalized_source_day = ""
     if source_day:
         normalized_source_day = _normalize_weekday(source_day)
@@ -551,6 +529,8 @@ async def start_task_timer(task_name: str, role: str = "", target_duration: int 
         "target_duration": target_duration,
         "source_day": normalized_source_day
     }
+    if debt_share:
+        payload["debt_share"] = debt_share
     return await _make_request("POST", "/api/v1/timer/run/start", json_data=payload)
 
 @mcp.tool()
