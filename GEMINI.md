@@ -63,7 +63,7 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
   - Handles empty 200 OK responses as `{"status": "success"}`; a non-JSON 2xx body is an error (`{"error": "Invalid Response", "details": text}`), since every API endpoint returns JSON. An unsupported HTTP method returns `{"error": "Unsupported Method", ...}` without a request.
   - Callers check errors via `isinstance(res, dict) and res.get("error")`.
 - **Client-Side Validation**:
-  - Validates positive integers for task minutes and timer durations, and `debt_share` in 0–100, before sending requests.
+  - Validates positive integers for task minutes, and `debt_share` in 0–100, before sending requests.
   - Validates task payload dictionaries in batch updates (`add_schedule_tasks`) and rejects invalid shapes (e.g., boolean `time`).
   - Returns `{"error": ...}` dicts directly without dispatching invalid HTTP calls.
 - **Day & Scope Normalization**:
@@ -71,7 +71,6 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
   - `_resolve_target_days(scope)`: Expands targets to appropriate day lists (`"week"` -> 7 days, `"weekdays"` -> 5 days, `"weekends"` -> 2 days, `"today"` -> current weekday).
 - **Time Units Conventions**:
   - Debt: `start_task_timer(debt_share=P)` sends P % of the session to the task's previous-days debt on stop. There is no rest pool any more.
-  - Legacy countdown timer: the server keeps an escalating interval list. `set_timer(count)` resets it to `[1..count]` minutes and `get_timer` returns the first remaining interval (not the value passed to `set_timer`). Separate from `timer/run/*` running-task timers.
 - **Composite Tools**:
   - `add_schedule_tasks`: Performs client-side read-modify-write on active weekly schedule (`GET /api/v1/schedule/active` -> update in memory with case-insensitive matching & recalculate `total_time` -> `PUT /api/v1/schedule/{id}`).
   - `suggest_daily_schedule`: Encodes routine heuristics (weekday work 270m, english 20m, background task smoothing 30m, weekend home task 60m focus, rollover deficit detection). Previews by default; with `apply=True` it calls `set_schedule_task_time` once per change (not atomic) and reports `success`/`partial`/`error`.
@@ -92,7 +91,7 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
 
 ### Task Records & Statistics
 - `add_task_record`: Record completed task minutes with optional `source_day` and `manage_by_service` (`POST /api/v1/taskrecord`).
-- `get_today_stats`: Fetch today's task completion statistics and time spent (`GET /api/v1/stats/done/today`).
+- `get_today_stats`: Fetch today's tasks with planned and done minutes (`today_tasks` of `GET /api/v1/dashboard/state`).
 - `get_weekly_stats`: Fetch weekly completion statistics with per-day breakdowns and role totals (`GET /api/v1/stats/weekly`).
 
 ### Running Task Timers (Server-Authoritative)
@@ -106,10 +105,6 @@ docker run -i --rm -e TRACKER_API_URL=http://host.docker.internal:3000 tracker-m
 
 ### Debt
 - `get_debt`: This week's debt — previous days' unfinished schedule, today's remainder and the week strip (`GET /api/v1/debt`).
-
-### Default Countdown Timer
-- `get_timer`: Get the next interval (minutes) from the legacy escalating countdown list (`GET /api/v1/timer/get`).
-- `set_timer`: Reset that list to the intervals 1..`count` minutes (`POST /api/v1/timer/set`).
 
 ### Evening Focus Mode
 - `get_evening_focus_task`: Fetch ranked candidate task for evening catch-up mode (`GET /api/v1/mode/evening-focus`).

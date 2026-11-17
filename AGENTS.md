@@ -48,7 +48,7 @@ Use Python 3.11+ and follow PEP 8 with 4-space indentation. Keep MCP tool functi
 
 - **MCP Stdio Safety**: FastMCP communicates over stdio using `sys.stdout`. Never call `print()` or write to stdout (outside CLI `--help`). All application logging must be routed to `sys.stderr` via `logger`.
 - **Validation**: Reject invalid inputs client-side (non-positive minutes, invalid day names, malformed task dicts) and return `{"error": ...}` dicts without raising unhandled exceptions or making failed API requests.
-- **Debt**: `get_debt` returns the week's debt; `start_task_timer` takes `debt_share` (0–100). The rest balance and its tools are gone. The legacy countdown timer is an interval list in minutes: `set_timer(count)` resets it to `[1..count]`, `get_timer` returns the first remaining interval.
+- **Debt**: `get_debt` returns the week's debt; `start_task_timer` takes `debt_share` (0–100). The rest balance and its tools are gone.
 - **API Contract**: Match request/response schemas with `../tracker-server/openapi.yml` and the Go route handlers under `../tracker-server/internal/api/handler/`.
 
 Prefer explicit type hints for public helpers and MCP tool parameters. Keep comments short and limited to non-obvious behavior.

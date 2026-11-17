@@ -131,8 +131,20 @@ async def _save_active_schedule(schedule: dict) -> Any:
 
 @mcp.tool()
 async def get_today_stats() -> Any:
-    """Get today's tasks completion statistics and time spent."""
-    return await _make_request("GET", "/api/v1/stats/done/today")
+    """Get today's tasks with planned and done minutes.
+
+    Returns a list of tasks with name, role, time_duration (planned minutes), time_done and priority, read from today_tasks of GET /api/v1/dashboard/state; an empty list when today has no tasks.
+    """
+    response = await _make_request("GET", "/api/v1/dashboard/state")
+    if isinstance(response, dict) and response.get("error"):
+        return response
+    if isinstance(response, dict) and "today_tasks" in response:
+        tasks = response["today_tasks"]
+        if tasks is None:
+            return []
+        if isinstance(tasks, list):
+            return tasks
+    return {"error": "Invalid Response", "details": response}
 
 @mcp.tool()
 async def get_today_schedule() -> Any:
@@ -478,31 +490,6 @@ async def get_debt() -> dict:
     `start_task_timer` `debt_share`) and `clean` wipes it with the week's records.
     """
     return await _make_request("GET", "/api/v1/debt")
-
-@mcp.tool()
-async def get_timer() -> Any:
-    """Get the next interval, in minutes, from the legacy escalating countdown list.
-
-    The server keeps a list of intervals (1, 2, 3, ... minutes) and returns the first
-    remaining one as `time_duration`/`count`. This is NOT the value passed to `set_timer`.
-    Unrelated to the running-task timers (`start_task_timer` etc.).
-    """
-    return await _make_request("GET", "/api/v1/timer/get")
-
-@mcp.tool()
-async def set_timer(count: int) -> dict:
-    """Reset the legacy escalating countdown list to the intervals 1..count minutes.
-
-    This overwrites the current list, discarding its progress; afterwards `get_timer`
-    returns 1 (the first interval), not `count`. It does not set a single duration.
-
-    Args:
-        count: Number of intervals in the new list (the longest is `count` minutes). Must be greater than zero.
-    """
-    if count <= 0:
-        return {"error": "count must be strictly positive"}
-    payload = {"count": count}
-    return await _make_request("POST", "/api/v1/timer/set", json_data=payload)
 
 @mcp.tool()
 async def start_task_timer(task_name: str, role: str = "", target_duration: int = 0, source_day: Optional[str] = None, debt_share: int = 0) -> dict:

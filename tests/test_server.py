@@ -397,18 +397,35 @@ async def test_start_task_timer_rejects_bad_debt_share(share):
         mock_req.assert_not_called()
 
 @pytest.mark.asyncio
-async def test_set_timer():
+async def test_get_today_stats_reads_dashboard_state():
+    task = {"name": "work", "role": "work", "time_duration": 270, "time_done": 90, "priority": 1}
     with patch("server._make_request", new_callable=AsyncMock) as mock_req:
-        mock_req.return_value = {"status": "accept"}
-        await server.set_timer(25)
-        mock_req.assert_called_once_with("POST", "/api/v1/timer/set", json_data={"count": 25})
+        mock_req.return_value = {"running_task": None, "today_tasks": [task], "total_planned": 270, "total_done": 90, "completion_pct": 33}
+        res = await server.get_today_stats()
+        assert res == [task]
+        mock_req.assert_called_once_with("GET", "/api/v1/dashboard/state")
 
 @pytest.mark.asyncio
-async def test_set_timer_rejects_non_positive():
+async def test_get_today_stats_null_tasks_is_empty_list():
     with patch("server._make_request", new_callable=AsyncMock) as mock_req:
-        res = await server.set_timer(0)
-        assert "error" in res
-        mock_req.assert_not_called()
+        mock_req.return_value = {"running_task": None, "today_tasks": None, "total_planned": 0, "total_done": 0, "completion_pct": 0}
+        res = await server.get_today_stats()
+        assert res == []
+
+@pytest.mark.asyncio
+async def test_get_today_stats_passes_error_through():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"error": "HTTP 500", "details": "boom"}
+        res = await server.get_today_stats()
+        assert res == {"error": "HTTP 500", "details": "boom"}
+
+@pytest.mark.asyncio
+async def test_get_today_stats_rejects_body_without_tasks():
+    with patch("server._make_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"status": "success"}
+        res = await server.get_today_stats()
+        assert res["error"] == "Invalid Response"
+        assert res["details"] == {"status": "success"}
 
 @pytest.mark.asyncio
 async def test_add_task_record_normalizes_source_day():
