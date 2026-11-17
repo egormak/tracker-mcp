@@ -6,7 +6,7 @@ FastMCP Python server exposing `tracker-server` REST API capabilities as Model C
 
 - **Technologies**: Python 3.11+, FastMCP, httpx, pytest, pytest-asyncio.
 - **Transport**: stdio (MCP JSON-RPC over stdin/stdout).
-- **Role**: Bridges LLM AI assistants (Gemini, Claude, Antigravity) to `tracker-server` REST endpoints, providing tools for task tracking, schedule editing, timer control, rest tracking, and evening focus mode.
+- **Role**: Bridges LLM AI assistants (Gemini, Claude, Antigravity) to `tracker-server` REST endpoints, providing tools for task tracking, schedule editing, timer control, weekly debt, and evening focus mode.
 - **Ecosystem Context**: Part of the tracker ecosystem (`../tracker-server` Go Fiber backend, `tracker-app` macOS app, `tracker_cli`, `tracker_bot`, `tracker-web`). The definitive API contract is `../tracker-server/openapi.yml` and Go handlers in `../tracker-server/internal/api/handler/`.
 - **Key Files**:
   - `server.py`: FastMCP server entrypoint, tool definitions, request routing helper, and normalization logic.
